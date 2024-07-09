@@ -114,6 +114,8 @@ Behaviorally this container appears functionally identical to the single-stack c
 
 The other major drawback is that the container image is almost 15GB rather than 10GB.  No attempt at optimization of packages that are no longer needed in the stack environment has been made, so there's probably some wiggle room.  And we could always give up on PDF export of notebooks, which introduces a surprising amount of complexity and storage space requirements into the UI Python environment.
 
+This approach has also been used with our (early July, 2024) proof-of-concept implementation with SPHEREx at TACC.  There, a payload container (from https://github.com/lsst-sqre/spherex-lab ) running the public (that is, non-export-controlled) parts of the SPHEREx analysis environment (supplied as a Conda environment specification) is demonstrated.
+
 ## Further enhancements
 
 A further change to the spawner would help us move towards our goal of fully separating the Jupyterlab and payload environments:
