@@ -1,15 +1,34 @@
 # Peeling Apart The Pythons
 
 ```{abstract}
-We have reached the point of untenability with respect to the tight coupling of the LSST DM Science Pipelines stack and the JupyterLab interface presented by the Notebook Aspect of a Phalanx environment.
 
-This technote will explore our options to move forward, with four particular considerations in mind:
+Up to the time of writing, we have been using the LSST Science Pipelines Stack (hereafter "stack") as the python underlying nublado, the service implementing the Rubin Science Platform Notebook Aspect.
+At the time, this was an easy and efficient way to guarantee that a nublado user had a python environment that was consistent with the stack environment and to leverage work already done by the pipelines build system.
 
-1. We need the ability to support arbitrary payloads, not solely the DM pipelines stack.  Maybe that's a vanilla Python environment, maybe it's an ML framework, maybe it's some completely different analysis pipeline.
-2. How should we accept a definition of the payload?  A pip requirements.txt file? A conda environment YAML file? A supplied Docker container?  A Dockerfile?  An installation shell script? something else?
-3. What else will be required for this payload?  Custom tag-categorization-and-sorting-class equivalent to the current RSPTag?  A set of environment variables that must be supplied?  A configuration YAML file?  A custom spawner menu?  Something else?
-4.  It will be necessary to maintain compatibility with prior versions of the DM pipelines stack; not only must any new spawner be able to launch older images, but we must be able to create maintenance rebuilds of historical images with updated libraries and mechanisms and have them launch and perform correctly.
+Now that we are operating a long-running service, we are encountering the limitations of this approach. This technote outlines our plan to change nublado to use a python version for the service that is distinct from the in-stack python available to the user.
+
 ```
+
+## Motivation
+
+At the time of writing (June 2024), nublado lab containers are built every night by GitHub Actions jobs.
+They consume a stack container produced by Jenkins, which is named `docker.io/lsstsqre/centos:7-stack-lsst_distrib-<tag>` where the tag follows conventions described in [sqr-059][1].
+
+So far we have been using the python included inside the stack containers as an easy and efficient way to guarantee that a nublado user had a python environment that was consistent with the stack environment and to leverage work already done by the pipelines build system.
+
+The following drivers are causing us to move on from the current approach.
+
+1. We want nublado to be able to support arbitrary payloads, i.e. different types of containers besides stack containers. Examples would be: a lightweight python only container, a "special edition" container supplied by a collaborating group that is specific to a particular science user case (eg a ML-oriented container maintained by an initiative), or another mission's container.
+
+2. In operations we have a complex backwards compatibility story that includes the requirement to provide a nublado container with a two-year-old version of the pipelines in the current service. This means we need to be able to keep the service current while the stack is running an older version of python.
+
+3. We have seen operational fragility where a user can modify their environment in a way that prevents JupyterLab from starting.
+
+4. We have occasionally wanted to move to a newer version of python than what is supported in the stack (for example we recently wanted to move to 3.12 in order to use the `pathlib.Path.walk()` while the stack was still on Python 3.11). It is a possibility during survey operations, especially in the latter half, pipelines will become more conservative about python upgrades at a time when Science Platform infrastructure is still aggressively developed.
+
+We have been tracking these risks for a while, and the upcoming switch of the pipelines build from CentOs to AlmaLinux (which will already require some retooling on the services side) presents us with a convenient opportunity to do this change.
+
+The remainder of this technote addresses some implementation considerations that support our motivations.
 
 ## Nomenclature
 
@@ -17,45 +36,23 @@ Within the context of this technote, we are going to assume two Pythons: the "Ju
 
 We are assuming that the payload is at its core a Python environment.  It is not impossible that we might someday consider a non-python payload, but that is outside the scope of this technote, and in any event, any Nublado-spawned container image will need at least one Python environment in order for the Jupyterlab UI to function.
 
-## Current State of the World (late June, 2024)
-
-The Rubin Science Platform lab containers are built every night by GitHub Actions jobs.
-They consume a container produced by Jenkins, which is named `docker.io/lsstsqre/centos:7-stack-lsst_distrib-<tag>` where the tag follows conventions described in [sqr-059][1].
-
-### Pros of this approach
-
-This approach brings with it certain benefits.
-
-1. First and foremost is that it produces the smallest plausible container images.  "Smallest" is of course relative: the DM pipelines stack itself is very large, and so even this image is nearly 10GB (uncompressed; Docker Hub suggests that "a bit more than 3" is an accurate compression ratio for image transmission purposes).  Jupyterlab plus visualization frameworks plus lab extensions plus the machinery to export notebooks in various formats is also several GB, and if that has to *also* include a different Python installation, it's even larger.  Note that if separate Pythons are chosen, because lab extensions are now usually distributed as Pip-installable packages, you will need a copy of a given package (e.g. `dash`) in each Python environment, because the Javascript UI elements need to run in the browser and thus be served by the Jupyterlab Python, but the back-end elements need to run in the context of the payload Python.
-2. The DM Pipelines Stack version present is always exactly the official one for that date.  This is complicated by the fact that the conda-installed parts of rubin-env are fixed for the lifetime of a release, but the EUPS-installed pieces are indeed rebuilt nightly.  This state of affairs is a consequence of:
-3. The production of the "stack container" is itself an extremely complicated layer-cake.  Effectively, the base conda environment for a given release version of the `rubin-env` environment is created, and itself containerized, when a new release version is cut, and then reused for subsequent builds.  This means that the stack you get differs from the stack you would have if you just ran [lsstinstall][2], because the second will get current-at-runtime versions of `rubin-env` packages and their dependencies.  Building the sciplat-lab image on top of the nightly container build sidesteps all those complexities.
-
-### Cons of this approach
-
-As you might expect, this also has several drawbacks.
-
-1. The most important is that the Python environment of the Jupyterlab machinery that furnishes the notebook UI to the user must be a superset of the DM pipelines stack environment.  This is problematic for many reasons.  A good example at the time of writing is that it would be convenient at Lab startup to be able to use the Python `pathlib.Path.walk()` method; however, this feature is not available in Python prior to 3.12, and the DM Stack is at version 3.11 due to some of its dependencies not being able to function with 3.12 or later.  This general class of problem percolates down to other packages as well, including iPython and Jupyter components.  It would be extremely convenient to decouple the Lab launching and presentation mechanisms from the internals of the DM pipelines stack.  It becomes much more of a nightmare than necessary to ensure that the Lab machinery and the stack play well together.
-2. It is by definition impossible to add new payloads.  If the only Python in the image is that of the DM stack then there is no way to add payloads that are not subsets of the DM-stack-plus-Jupyterlab-Machinery conglomerate.
-3. With only one Python and only one Conda environment, it becomes distressingly easy for user-installed software to keep the Lab from starting, because the user-installed software, which worked with the image current when written, becomes incompatible with later Lab evolution.  If the Jupyterlab process cannot fully start, the user has no way to rectify the situation.  This is precisely why the Rubin spawner has the "Relocate User Environment" checkbox.
-4. Currently, the DM Stack container is built atop CentOS 7.  CentOS 7 was released in 2014, ceased receiving full updates in August 2020, and will receive (by the time you read this, will have received) its last maintenance update at the end of June 2024.  CentOS itself has been discontinued.  The next release of the rubin-env Conda environment, 9.0.0, will be based on AlmaLinux 9.  Since SQuaRE will have to do significant retooling to accomodate that change, doing the split now may be easier than delaying.
-
-### Summary
-
-In short, we (SQuaRE) have decided that the cons now outweigh the pros, and we plan to develop a way to allow the Jupyterlab python environment to exist completely independently of the DM stack python environment.  The rest of this technote will address the four bullet points in the abstract, with discussion of various approaches we could take to each of them.
-
 ## Arbitrary Payloads
 
-Not all containers of interest to Rubin Observatory notebook users require the full majesty of the DM pipelines stack.  For example, it is completely irrelevant to the use at Telescope and Site environments of Jupyterlab as an instrument control interface.  Most of the notebooks people would like to run via Noteburst require little, if any, of the DM stack.
+In considering support for arbitrary nublado payloads (i.e. different flavors of container), the following questions arise:
 
-People have asked for capabilities that would be tricky to provide within the framework of the DM stack; for instance, Tensorflow or other machine learning frameworks.  There have been occasional requests to support R or FORTRAN, both of which seem like support nightmares to this author.  For the time being we are only considering the case where the payload is essentially a collection of Python packages.
 
-Further, it is quite possible to imagine that there are people within the project who want to bring different tools to bear; for instance, the Phalanx framework could run the SPHEREx analysis environment.
+1. How should we accept a definition of the payload?  A pip requirements.txt file? A conda environment YAML file? A supplied Docker container?  A Dockerfile?  An installation shell script? something else?
 
-In any case, the payload will be reified into a bunch of files in the container and a kernel specification that references the environment constituted by that bunch of files.
+2. What else will be required for this payload?  Custom tag-categorization-and-sorting-class equivalent to the current RSPTag?  A set of environment variables that must be supplied?  A configuration YAML file?  A custom spawner menu?  Something else?
+
+3.  It will be necessary to maintain compatibility with prior versions of the DM pipelines stack; not only must any new spawner be able to launch older images, but we must be able to create maintenance rebuilds of historical images with updated libraries and mechanisms and have them launch and perform correctly.
+
+4. Methods for specifying the payload need to consider likely scenarios of what publishers of alternative payloads would find convenient to supply as manifests.
+
 
 ## Payload Specification
 
-Let's begin with the obvious.  The payload must be able to be installed without human intervention.  Ultimately it will be installed from a Dockerfile; whether that's a single `RUN` or `COPY` command, or a `RUN` command kicking off a complex script, or `FROM some-other-container AS upstream` we don't know yet.
+Obviously the payload must be specified in such a way that it can be automatically built by our build chain.  Ultimately it will be installed from a Dockerfile; whether that's a single `RUN` or `COPY` command, or a `RUN` command kicking off a complex script, or `FROM some-other-container AS upstream` is a matter of debate.
 
 There are two fundamental ways of providing different payload and Jupyterlab python environments.
 
@@ -106,7 +103,7 @@ This also addresses the maintenance issue.  If we need to rebuild a current vers
 
 ## Proposed Implementation
 
-I think something like [the proof-of-concept implementation][3] is the right direction.  This one is based on the current official Python 3.12 container, which is Debian-based.  It does not produce exactly the same stack container that its counterpart in the lsst-distrib-as-base-container model would, in that the rubin-env Conda environment is freshly installed each time the container runs [lsstinstall][2] and therefore will get newer versions of dependent packages (the decision not to hard-pin versions was taken by the Science Pipelines developers; the author disagrees with their choice, but above my pay grade, I suppose).
+We think something like [the proof-of-concept implementation][3] is the right direction.  This one is based on the current official Python 3.12 container, which is Debian-based.  It does not produce exactly the same stack container that its counterpart in the lsst-distrib-as-base-container model would, in that the rubin-env Conda environment is freshly installed each time the container runs [lsstinstall][2] and therefore will get newer versions of dependent packages (the decision not to hard-pin versions was taken by the Science Pipelines developers; the author disagrees with their choice, but above my pay grade, I suppose).
 
 There is a potential problem--I am not sure of its gravity--in that Jupyterlab extensions are usually supplied as a frontend UI set of components, and a Python backend server component.  It is not clear to me that the two of these should always be in the Jupyterlab environment rather than one in the Jupyterlab Python and one in the Payload Python, or whether they should be installed in both, and if the answer is "both", then how does the frontend know how to talk to the correct backend?  Will the backend, potentially running on an entirely different python version, necessarily even be able to communicate with the frontend?  It is entirely possible I am overthinking this; it appears that installing all the extension-ish stuff and its dependencies into the Jupyterlab Python is working for us now.
 
@@ -114,7 +111,7 @@ Behaviorally this container appears functionally identical to the single-stack c
 
 The other major drawback is that the container image is almost 15GB rather than 10GB.  No attempt at optimization of packages that are no longer needed in the stack environment has been made, so there's probably some wiggle room.  And we could always give up on PDF export of notebooks, which introduces a surprising amount of complexity and storage space requirements into the UI Python environment.
 
-This approach has also been used with our (early July, 2024) proof-of-concept implementation with SPHEREx at TACC.  There, a payload container (from https://github.com/lsst-sqre/spherex-lab ) running the public (that is, non-export-controlled) parts of the SPHEREx analysis environment (supplied as a Conda environment specification) is demonstrated.
+This approach has also been used with our (early July, 2024) proof-of-concept implementation of a SPHEREx nublado deployment, done as part of a technology demonstration.  There, a payload container (from https://github.com/lsst-sqre/spherex-lab ) running the public (that is, non-export-controlled) parts of the SPHEREx analysis environment (supplied as a Conda environment specification) is demonstrated.
 
 ## Further enhancements
 
