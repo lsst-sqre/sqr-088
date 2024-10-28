@@ -60,7 +60,7 @@ The other, provided by the `rubin-env` Conda environment, is used to run the exe
 
 When adding other payloads, we will use the same approach: a Docker build for the payload lab containers, layered on top of `nublado-jupyterlab-base`.
 
-This approach has been tested in the [nublado repository][2] and the resulting images appear to work correctly.
+This approach has been tested in the [Nublado repository][2] and the resulting images appear to work correctly.
 
 ### Changed behavior
 
@@ -98,6 +98,42 @@ Once all of the old images are so old that we no longer need to be able to use t
 
 A similar backward-compatibility layer can also be used to support old payloads once the Nublado controller has switched to the new paths.
 When rebuilding an image for an old payload on top of a current JupyterLab container, a backward-compatibility link and copy step can make the old paths available in the new location expected by the Nublado controller.
+
+## Source organization
+
+As part of this work, we also intend to reorganize the source to the various Nublado components to make it easier to find and maintain as a unified product.
+
+The [Nublado repository](https://github.com/lsst-sqre/nublado) will hold the general infrastructure for the Nublado Phalanx service.
+This is the code that is generic to any instantiation of the service.
+It includes the JupyterHub and JupyterLab infrastructure, including any JupyterLab extensions that are common across payloads.
+This repository is maintained as a verical monorepo (see {sqr}`075`).
+
+Specifically, the Nublado repository will contain:
+
+1. The Docker build and plugins for the Nubaldo version of JupyterHub.
+2. The Nublado lab controller (see {sqr}`066`).
+3. A Python library for making requests to the Nubaldo version of JupyterHub and JupyterLab.
+4. Any JupyterLab extensions included in the Nublado version of JupyterLab (but see the note below).
+5. Any code used in the JupyterLab base container to customize the JupyterLab start-up process that is independent of any payload.
+6. The Docker build for the JupyterLab base container, including those extensions but not including any payload or Docker builds for payload containers.
+7. The file server used to implement the WebDAV component of Nubaldo (see {sqr}`078`).
+8. Other utilities or supporting containers for the Nublado JupyterLab or JupyterHub, independent of any payload.
+   Examples include the `inithome` container to create user home directories on demand or a utility to delete old images from a Docker image repository.
+9. Documentation for Nublado as a whole.
+
+For point 4, note that the GitHub build tools for JupyterLab extensions currently require those extensions be at the top level of a repository.
+We will therefore keep them in a separate repository until this limitation of the build tools has been fixed.
+
+Anything related to a specific payload will not be kept in the Nublado repository.
+Specifically, the pieces required for the Notebook Aspect of the Rubin Science Platform, as independent from a generic Nublado installation, will be maintained in a separate repository.
+This ensures that the separation of concerns between Nublado and a specific payload will be exercised internally at Rubin.
+This includes:
+
+1. Any programs or libraries installed as part of the payload rather than inside JupyterLab itself.
+   As an exception, generic clients for JupyterLab extensions maintained as part of Nublado can be maintained the Nublado repository along with the extension.
+2. Installation and Docker builds for any specific payload container.
+3. Any additional start-up code for the payload kernel, as opposed to the JupyterLab service.
+4. Any additional software intalled for the benefit of the shell environment of the payload container, unless it's part of the generic Nublado infrastructure.
 
 ## Testing experience
 
@@ -236,6 +272,6 @@ One possible option would be a tag class that expects [semver][3] or [calver][4]
   Supporting multiple payloads at the same time within one Rubin Science Platform deployment will require rethinking the spawner form UI and the Nublado controller configuration.
 
 [1]: https://ls.st/lsstinstall "lsstinstall"
-[2]: https://github.com/lsst-sqre/sciplat-lab/tree/tickets/DM-44731 "Proof of concept for two-Python sciplat-lab container"
+[2]: https://github.com/lsst-sqre/nublado/tree/main/sciplat-lab "Proof of concept for two-Python sciplat-lab container"
 [3]: https://semver.org/ "semver"
 [4]: https://calver.org/ "calver"
