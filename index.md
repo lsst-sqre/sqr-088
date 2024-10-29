@@ -3,9 +3,8 @@
 ```{abstract}
 
 The Nublado component of the Rubin Science Platform provides users with a Python notebook execution environment that includes the Science Pipelines stack.
-At present, the Python installation provided by the Science Pipelines conda environment is used to run both JupyterLab and for the notebook kernel.
+At present, the Python installation provided by the Science Pipelines Conda environment is used to run both JupyterLab and for the notebook kernel.
 This approach is relatively simple, but it tightly coupled the service with the notebook kernel in a way that presents serious backwards compatibility problems and has been a source of fragility.
- complicates maintenance of the UI and makes it unnecessarily fragile.
 This tech note describes plans for a new base (lightweight) Docker image for Nublado pods and a strategy for separating the Python environment used for JupyterLab from the Python environment used for the notebook execution kernel.
 
 ```
@@ -14,7 +13,7 @@ This tech note describes plans for a new base (lightweight) Docker image for Nub
 
 At the time of writing (October 2024), Nublado lab containers are built on top of science pipelines containers produced by the pipelines build system (Jenkins).
 These containers are named `docker.io/lsstsqre/centos:7-stack-lsst_distrib-<tag>`, using the tag conventions described in {sqr}`059`.
-Currently, they use the version of Python included in the conda environment provided by the stack for both JupyterLab and for the notebook execution kernel.
+Currently, they use the version of Python included in the Conda environment provided by the stack for both JupyterLab and for the notebook execution kernel.
 
 This was a convenient approach in early versions of the service, but presents a number of issues going forward:
 
@@ -22,23 +21,26 @@ This was a convenient approach in early versions of the service, but presents a 
    Some possible examples are a lightweight Python-only container, a machine-learning-oriented container customized to the needs of a particular science collaboration, or a kernel maintained by a non-Rubin mission who adopted our platform.
 
 2. During operations, we have a complex backwards compatibility story.
-   We are required to make available kernels based on up to 3-year-old versions of the science pipelines; however we do not want to be locked into deploying 3-year-old versions of the service.
+   We are required to make available kernels based on up to three-year-old versions of the Rubin Science Pipelines.
+   We do not, however, want to be locked into deploying three-year-old versions of the service.
 
-3. Sharing a Python execution environment between the user's kernel and the JupyterLab server means that the user can customize their environment in ways that break the JupyterLab server, thus locking themselves out of the service (this has already happened to one user during the Preview phase).
-   While we provide them with the capability to reset their environment to resolve this, it can lose them other customizations and creates unnecessary user support load.
+3. Sharing a Python execution environment between the user's kernel and the JupyterLab server means that the user can customize their environment in ways that break the JupyterLab server, thus locking themselves out of the service.
+   This has already happened to one user during the Preview phase.
+   Although we provide them with the capability to reset their environment to resolve this, the reset creates unnecessary user support load and may lose other customizations.
 
-4. The Science Pipelines conda environment adopts new versions of Python relatively slowly, but newer versions of Python are often helpful for the Rubin Science Platform service layer.
-   For example, we recently wanted to use {py:meth}`pathlib.Path.walk` in the JupyterLab startup code, which requires Python 3.12, but the Science Pipelines conda environment was still using Python 3.11.
-   It is likely that the Science Pipelines conda environment will become even more conservative once we enter operations.
+4. The Science Pipelines Conda environment adopts new versions of Python relatively slowly, but newer versions of Python are often helpful for the JupyterLab service layer.
+   For example, we recently wanted to use {py:meth}`pathlib.Path.walk` in the JupyterLab startup code, which requires Python 3.12, but the Science Pipelines Conda environment was still using Python 3.11.
+   It is likely that the Science Pipelines Conda environment will become even more conservative once we enter operations.
 
-We have been aware of these issues for some time; recent developments such as the recent switch of the Science Pipelines container from CentOS to AlmaLinux and the approach of Data Preview 1 presented a timely opportunity to replace this architecture with a new one that is better matched to our future needs.
+We have been aware of these issues for some time.
+Recent developments such as the recent switch of the Science Pipelines container from CentOS to AlmaLinux and the approach of Data Preview 1 presented a timely opportunity to replace this architecture with a new one that is better matched to our future needs.
 
 ## Nomenclature
 
-Within the context of this tech note, we refer to two Python distributions: the "JupyterLab Python" responsible for providing the UI and browser-specific components to the Lab user, and the "Payload Python", packaged as a Jupyter kernel, which provides the Python environment that executes the user's notebook and can be used by the user from an interactive shell for many purposes, including installing their own packages for use in their notebooks.
+Within the context of this tech note, we refer to two Python distributions: the "JupyterLab Python" responsible for providing the UI and browser-specific components to the Lab user, and the "payload Python", packaged as a Jupyter kernel, which provides the Python environment that executes the user's notebook and can be used by the user from an interactive shell for many purposes, including installing their own packages for use in their notebooks.
 There will likely be non-core-Python components that must be common to both (see below), but in general the contents of these different Python environments can and should be largely disjoint.
 
-For the context of this technote, the nublado payload is explicitly a Python environment.
+For the context of this technote, the Nublado payload is explicitly a Python environment.
 Non-Python payloads are a future possibility, but are outside the scope of this tech note as we have no immediate plans to support them.
 
 ## Proposed architecture
@@ -72,7 +74,7 @@ There are a few note-worthy differences between this approach and the previous c
   It will therefore pick up newer versions of package dependencies, since the Science Pipelines Conda environment does not pin package versions.
   This creates some additional risk of surprise bugs or incompatibilities.
 
-- The container image is almost 15GB (uncompressed), rather than 10GB with a shared Python installation
+- The container image is almost 15GB (uncompressed), rather than 10GB with a shared Python installation.
   This is prior to any attempt at optimization, such as removal of packages that are no longer needed in the payload, so this discrepancy may get smaller with optimization.
   A lot of the space usage comes from supporting PDF export of notebooks, which introduces a surprising amount of complexity and large software package installations into the JupyterLab environment.
 
@@ -84,9 +86,9 @@ JupyterLab extensions are usually supplied as a combination of frontend UI compo
 In some cases, the latter may need to be available in the payload so that the executed cell can talk to the JupyterLab UI extension.
 
 This creates the possibility that the code in the payload will diverge from the code in the frontend in a way that causes the former to no longer be able to talk to the latter, particularly when running older payloads
-We do not currently have a solution to this but as it has not happened with the extensions we have been using so far, we have grounds to hope that such an incompatibility won't occur.
+We do not currently have a solution to this, but since we have not problems with the extensions we have been using so far, we have grounds to hope that such an incompatibility won't occur.
 
-### Transition from the previous architecture to the separate Pythons one
+### Transition to the new architecture
 
 For the Rubin Science Platform use case, we need to be able to continue to spawn older images.
 This requires some care, since the new design moves some files to different locations in the Docker image, but the Nublado controller expects to use the same entry points for all lab images.
@@ -165,7 +167,7 @@ To support arbitrary Nublado payloads, we have to answer a few questions:
 
 2. How should we accept a definition of the payload?
    A pip `requirements.txt` file?
-   A conda environment YAML file?
+   A Conda environment YAML file?
    A supplied Docker container?
    A `Dockerfile`?
    An installation shell script?
@@ -188,7 +190,7 @@ There are two fundamental ways of providing different payload and Jupyterlab Pyt
 
 1. Install the Jupyterlab machinery on top of a supplied container.
    This is the way we're currently doing it, and it can be adopted for a two-Python configuration.
-   Currently, we install everything into the `rubin-env` conda environment, but we could instead create a new conda environment for the JupyterLab runtime, with whatever version of Python is desirable, and install whatever JupyterLab needs into it.
+   Currently, we install everything into the `rubin-env` Conda environment, but we could instead create a new Conda environment for the JupyterLab runtime, with whatever version of Python is desirable, and install whatever JupyterLab needs into it.
    This creates a larger environment than the current status quo (as will all of these approaches) but is conceptually straightforward.
 
    A drawback of this method is that we have to tailor our installation approach to fit the base container.
