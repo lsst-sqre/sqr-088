@@ -4,55 +4,57 @@
 
 The Nublado component of the Rubin Science Platform provides users with a Python notebook execution environment that includes the Science Pipelines stack.
 At present, the Python installation provided by the Science Pipelines conda environment is used to run both JupyterLab and for the notebook kernel.
-This approach is relatively simple, but it tightly couples the JupyterLab UI with the notebook kernel in a way that complicates maintenance of the UI and makes it unnecessarily fragile.
-This tech note proposes a new base Docker image for Nublado pods and a strategy for separating the Python environment used for the JupyterLab UI from the Python environment used for the notebook execution kernel.
+This approach is relatively simple, but it tightly coupled the service with the notebook kernel in a way that presents serious backwards compatibility problems and has been a source of fragility.
+ complicates maintenance of the UI and makes it unnecessarily fragile.
+This tech note describes plans for a new base (lightweight) Docker image for Nublado pods and a strategy for separating the Python environment used for JupyterLab from the Python environment used for the notebook execution kernel.
 
 ```
 
 ## Motivation
 
-At the time of writing (October 2024), Nublado lab containers are built on top of stack containers produced by Jenkins.
+At the time of writing (October 2024), Nublado lab containers are built on top of science pipelines containers produced by the pipelines build system (Jenkins).
 These containers are named `docker.io/lsstsqre/centos:7-stack-lsst_distrib-<tag>`, using the tag conventions described in {sqr}`059`.
-Currently, they use the Python included in the conda environment provided by the stack for both the JupyterLab UI and for the notebook execution kernel.
+Currently, they use the version of Python included in the conda environment provided by the stack for both JupyterLab and for the notebook execution kernel.
 
-This approach has the following issues:
+This was a convenient approach in early versions of the service, but presents a number of issues going forward:
 
 1. We want to support execution kernels other than the Science Pipelines stack.
-   Some possible examples are a lightweight Python-only container, a machine-learning-oriented container customized to the needs of a particular collaborting group, or a kernel maintained by a different mission.
+   Some possible examples are a lightweight Python-only container, a machine-learning-oriented container customized to the needs of a particular science collaboration, or a kernel maintained by a non-Rubin mission who adopted our platform.
 
-2. In operations, we will need to support older kernels, such as a two-year-old version of the Science Pipelines execution environment, with whatever JupyterLab is current at that time.
+2. During operations, we have a complex backwards compatibility story.
+   We are required to make available kernels based on up to 3-year-old versions of the science pipelines; however we do not want to be locked into deploying 3-year-old versions of the service.
 
-3. Sharing a Python execution environment between the user's kernel and the JupyterLab server means that the user can customize their environment in ways that break the JupyterLab server.
-   When this happens, their Nublado lab may no longer be able to start until they reset their environment.
+3. Sharing a Python execution environment between the user's kernel and the JupyterLab server means that the user can customize their environment in ways that break the JupyterLab server, thus locking themselves out of the service (this has already happened to one user during the Preview phase).
+   While we provide them with the capability to reset their environment to resolve this, it can lose them other customizations and creates unnecessary user support load.
 
-4. The Science Pipelines conda environment adopts new versions of Python relatively slowly, but newer versions of Python are often helpful when developing the JpyterLab environment.
+4. The Science Pipelines conda environment adopts new versions of Python relatively slowly, but newer versions of Python are often helpful for the Rubin Science Platform service layer.
    For example, we recently wanted to use {py:meth}`pathlib.Path.walk` in the JupyterLab startup code, which requires Python 3.12, but the Science Pipelines conda environment was still using Python 3.11.
    It is likely that the Science Pipelines conda environment will become even more conservative once we enter operations.
 
-The recent switch of the Science Pipelines container from CentOS to AlmaLinux provides a convenient opportunity to replace this architecture with a new one that addresses these issues.
+We have been aware of these issues for some time; recent developments such as the recent switch of the Science Pipelines container from CentOS to AlmaLinux and the approach of Data Preview 1 presented a timely opportunity to replace this architecture with a new one that is better matched to our future needs.
 
 ## Nomenclature
 
-Within the context of this tech note, we are going to assume two Pythons: the "Jupyterlab Python" responsible for providing the UI and browser-specific components to the Lab user, and the "Payload Python", packaged as a Jupyter kernel, which provides the Python environment that executes the user's notebook and can be used from an interactive shell.
-There will likely be non-core-Python components that must be common to both (see below), but in general the contents of these different Python environments will be largely disjoint.
+Within the context of this tech note, we refer to two Python distributions: the "JupyterLab Python" responsible for providing the UI and browser-specific components to the Lab user, and the "Payload Python", packaged as a Jupyter kernel, which provides the Python environment that executes the user's notebook and can be used by the user from an interactive shell for many purposes, including installing their own packages for use in their notebooks.
+There will likely be non-core-Python components that must be common to both (see below), but in general the contents of these different Python environments can and should be largely disjoint.
 
-We are assuming that the payload is a Python environment.
-Non-Python payloads are a future possibility, but are outside the scope of this tech note.
+For the context of this technote, the nublado payload is explicitly a Python environment.
+Non-Python payloads are a future possibility, but are outside the scope of this tech note as we have no immediate plans to support them.
 
 ## Proposed architecture
 
-The proposed new architecture for Nublado lab containers uses three layers:
+The proposed new architecture for Nublado lab containers consists of three layers:
 
 1. The base layer is `docker.io/library/python`, the official Python container built on top of a Debian stable container.
-   This will track the latest stable Python release and will be updated for new Python releases on the same cadence as other Rubin Science Platform services (in other words, fairly aggressively, around the time of the first `.1` patch release).
+   This tracks the latest stable Python release and will be updated for new Python releases on the same cadence as other Rubin Science Platform services (in other words, fairly aggressively, around the time of the first `.1` patch release).
 
-2. On top of that base, install JupyterLab and its supporting packages, including any customizations to JupyterLab itself outside of the kernel payload.
-   This will use the Python provided by the base layer.
-   This will be published as `ghcr.io/lsst-sqre/nublado-jupyterlab-base` and serve as the base layer for all lab containers.
-   
+2. On top of that base we install JupyterLab and its supporting packages, including any customizations to JupyterLab itself outside of the kernel payload.
+   This uses the Python provided by the base layer.
+   It will be published as `ghcr.io/lsst-sqre/nublado-jupyterlab-base` and serve as the base layer for all lab containers.
+
 3. Finally, the payload for the execution kernel is layered on top of that base container.
-   For the default container for the Rubin Science Platform, published as `sciplat-lab`, this means running [lsstinstall][1] on top of the `nublado-jupyterlab-base` container created in the previous step, and then doing some additional setup and configuration.
-   This will install the `rubin-env` (and `rubin-env-rsp`) Conda environment including, among other things, a separate version of Python that has been tested with the Science Pipelines stack.
+   For the default container for the Rubin Science Platform, published as `sciplat-lab`, this means running [lsstinstall][1] on top of the `nublado-jupyterlab-base` container created in the previous step, and then performing some additional setup and configuration.
+   This installs the `rubin-env` (and `rubin-env-rsp`) Conda environment including, among other things, a separate version of Python that has been tested with the Science Pipelines stack.
 
 The resulting container therefore has, in the typical case, two separate installations of Python.
 One, provided by the official Python container, is used to run JupyterLab and cannot be customized by the user.
@@ -70,8 +72,8 @@ There are a few note-worthy differences between this approach and the previous c
   It will therefore pick up newer versions of package dependencies, since the Science Pipelines Conda environment does not pin package versions.
   This creates some additional risk of surprise bugs or incompatibilities.
 
-- The container image is almost 15GB, rather than 10GB with a shared Python installation
-  This is prior to any attempt at optimization, such as removal of packages that are no longer needed in the payload, so this discrepency may get smaller with optimization.
+- The container image is almost 15GB (uncompressed), rather than 10GB with a shared Python installation
+  This is prior to any attempt at optimization, such as removal of packages that are no longer needed in the payload, so this discrepancy may get smaller with optimization.
   A lot of the space usage comes from supporting PDF export of notebooks, which introduces a surprising amount of complexity and large software package installations into the JupyterLab environment.
 
 - The Python environment running JupyterLab shows up as an option if the user goes to the UI to change kernels, even though we would prefer the user not use that environment for execution kernels.
@@ -82,9 +84,9 @@ JupyterLab extensions are usually supplied as a combination of frontend UI compo
 In some cases, the latter may need to be available in the payload so that the executed cell can talk to the JupyterLab UI extension.
 
 This creates the possibility that the code in the payload will diverge from the code in the frontend in a way that causes the former to no longer be able to talk to the latter, particularly when running older payloads
-We do not currently have a solution to this other than hoping that such an incompatibility won't occur.
+We do not currently have a solution to this but as it has not happened with the extensions we have been using so far, we have grounds to hope that such an incompatibility won't occur.
 
-### Compatibility
+### Transition from the previous architecture to the separate Pythons one
 
 For the Rubin Science Platform use case, we need to be able to continue to spawn older images.
 This requires some care, since the new design moves some files to different locations in the Docker image, but the Nublado controller expects to use the same entry points for all lab images.
@@ -137,11 +139,25 @@ This includes:
 
 ## Testing experience
 
-This approach has also been used with our (early July, 2024) proof-of-concept implementation of a SPHEREx Nublado deployment, done as part of a technology demonstration.
+This approach has also been used with our (early July, 2024) proof-of-concept implementation of a pathfinder SPHEREx Nublado deployment, done as part of a technology demonstration.
 We successfully deployed a payload container (from [lsst-sqre/spherex-lab](https://github.com/lsst-sqre/spherex-lab)) running the public (that is, non-export-controlled) parts of the SPHEREx analysis environment and using this two-Python model.
-The SPHEREx envirnoment was installed via a Conda environment.
+The SPHEREx environment was installed via a Conda environment.
 
-## Analysis
+## Future work
+
+- Implement a new Docker image tag policy class that can be used instead of `RSPTag` when the payload provider uses a different versioning convention.
+  We will probably only want to support semver and calver.
+  Until this is done, other payloads that do not want to use the full {sqr}`059` version semantics should use tags that match the syntax of release version numbers as documented there.
+
+- Support selecting between different payloads in the spawner form.
+  Currently, Nublado assumes that all images will have the same payload and use the same configuration for paths, environment variables, and so forth.
+  Supporting multiple payloads at the same time within one Rubin Science Platform deployment will require rethinking the spawner form UI and the Nublado controller configuration.
+
+## Appendix
+
+The notes capture some of the discussion that led to the architecture described above and is unlikely to be of interest to the general reader.
+
+### Analysis
 
 To support arbitrary Nublado payloads, we have to answer a few questions:
 
@@ -166,7 +182,7 @@ To support arbitrary Nublado payloads, we have to answer a few questions:
 4. How do we maintain compatibility with prior versions of the Science Pipelines stack?
    We must be able to create maintenance rebuilds of historical images with updated libraries and integration APIs and have them launch and perform correctly.
 
-### Choice of base container
+#### Choice of base container
 
 There are two fundamental ways of providing different payload and Jupyterlab Python environments.
 
@@ -195,7 +211,7 @@ The most worrying part of the first approach is that accomodating new payloads i
 The second method hopefully will mean that we can use a single base container and build payload containers on top of it additively.
 New payloads would only require changing the build stages that implement the installation and runtime launch framework of that payload.
 
-### Installing payloads
+#### Installing payloads
 
 Unfortunately, there is no universal method of installing payloads, but in practice they should fall into one of the following five categories:
 
@@ -220,7 +236,7 @@ Unfortunately, there is no universal method of installing payloads, but in pract
 Any of the first four approaches can in theory be used in a Docker image build layered on top of a generic JupyterLab container, as long as the payload does not make too strong of assumptions about the operating system used by the base container.
 That makes replacement of the payload straightforward since it's isolated from the rest of the container build.
 
-### Payload configuration
+#### Payload configuration
 
 Configuration of the payload environment has at least three components.
 
@@ -236,7 +252,7 @@ If it is set, indicating the user is running inside JupyterLab, perform the nece
 
 The third component is the most difficult: the user interface for selecting images.
 
-#### Image selection
+##### Image selection
 
 In Nublado, we use a JupyterHub spawner form for this purpose.
 That form allows the user to select from a list of prepulled images or uncached images, a selector to choose container size, and two checkboxes useful for debugging and unwedging inoperable environments.
@@ -260,16 +276,6 @@ We may therefore need to add some new method of categorizing and sorting images.
 Currently, image classification is done by the `RSPTag` class within the Nublado lab controller implementation, which understands the Science Pipelines conventions documented in {sqr}`059`.
 We may need a second possible implementation of tag versioning with simpler sorting and prepulling properties.
 One possible option would be a tag class that expects [semver][3] or [calver][4] versions and prepulls the most recent N full (i.e., not alpha, beta, or pre-release) releases.
-
-## Future work
-
-- Implement a new Docker image tag policy class that can be used instead of `RSPTag` when the payload provider uses a different versioning convention.
-  We will probably only want to support semver and calver.
-  Until this is done, other payloads that do not want to use the full {sqr}`059` version semantics should use tags that match the syntax of release version numbers as documented there.
-
-- Support selecting between different payloads in the spawner form.
-  Currently, Nublado assumes that all images will have the same payload and use the same configuration for paths, environment variables, and so forth.
-  Supporting multiple payloads at the same time within one Rubin Science Platform deployment will require rethinking the spawner form UI and the Nublado controller configuration.
 
 [1]: https://ls.st/lsstinstall "lsstinstall"
 [2]: https://github.com/lsst-sqre/nublado/tree/main/sciplat-lab "Proof of concept for two-Python sciplat-lab container"
