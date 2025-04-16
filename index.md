@@ -9,6 +9,12 @@ This tech note describes plans for a new base (lightweight) Docker image for Nub
 
 ```
 
+## This Is An Archival Document
+
+We merged the 2-python work to `main` in April 2025.
+RSP sciplat-lab images `w_2024_14` and later are all 2-python versions.
+This document captures the motivation and design choices made to get to the current design.
+
 ## Motivation
 
 At the time of writing (October 2024), Nublado lab containers are built on top of science pipelines containers produced by the pipelines build system (Jenkins).
