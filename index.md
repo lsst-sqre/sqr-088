@@ -85,6 +85,7 @@ There are a few note-worthy differences between this approach and the previous c
   A lot of the space usage comes from supporting PDF export of notebooks, which introduces a surprising amount of complexity and large software package installations into the JupyterLab environment.
 
 - The Python environment running JupyterLab shows up as an option if the user goes to the UI to change kernels, even though we would prefer the user not use that environment for execution kernels.
+  We believe we have identified a fix for this.
 
 ### Potential problems
 
@@ -120,13 +121,13 @@ This repository is maintained as a verical monorepo (see {sqr}`075`).
 
 Specifically, the Nublado repository will contain:
 
-1. The Docker build and plugins for the Nubaldo version of JupyterHub.
+1. The Docker build and plugins for the Nublado version of JupyterHub.
 2. The Nublado lab controller (see {sqr}`066`).
-3. A Python library for making requests to the Nubaldo version of JupyterHub and JupyterLab.
+3. A Python library for making requests to the Nublado version of JupyterHub and JupyterLab.
 4. Any JupyterLab extensions included in the Nublado version of JupyterLab (but see the note below).
 5. Any code used in the JupyterLab base container to customize the JupyterLab start-up process that is independent of any payload.
 6. The Docker build for the JupyterLab base container, including those extensions but not including any payload or Docker builds for payload containers.
-7. The file server used to implement the WebDAV component of Nubaldo (see {sqr}`078`).
+7. The file server used to implement the WebDAV component of Nublado (see {sqr}`078`).
 8. Other utilities or supporting containers for the Nublado JupyterLab or JupyterHub, independent of any payload.
    Examples include the `inithome` container to create user home directories on demand or a utility to delete old images from a Docker image repository.
 9. Documentation for Nublado as a whole.
